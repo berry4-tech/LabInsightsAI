@@ -1,0 +1,73 @@
+# ----------------------------------------
+# PYTHON (Backend)
+# ----------------------------------------
+
+# Virtual environment folders
+Backend/venv/
+venv/
+env/
+
+# Python cache
+*.pyc
+*/*.pyc
+__pycache__/
+Backend/__pycache__/
+**/__pycache__/
+
+# Embedding files
+*.pkl
+
+
+# ----------------------------------------
+# ENVIRONMENT / SECRET FILES
+# ----------------------------------------
+
+# Any .env file in ANY folder
+.env
+.env.*
+*.env
+**/*.env
+
+# Specific backend .env
+Backend/.env
+
+
+# ----------------------------------------
+# NODE / REACT / VITE (Frontend)
+# ----------------------------------------
+
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+
+# ----------------------------------------
+# IDE / EDITOR FILES
+# ----------------------------------------
+
+.vscode/
+.DS_Store
+Thumbs.db
+
+
+# ----------------------------------------
+# APP GENERATED / UPLOADS
+# ----------------------------------------
+
+# Uploaded PDFs from users
+Backend/UploadedPdfs/
+
+# Temporary or generated files
+*.log
+*.tmp
+
+# JSON or DB dumps (if used)
+*.db
+*.sqlite
+*.sqlite3
+
+# Ignore build folder if Vite builds production output
+dist/
+build/

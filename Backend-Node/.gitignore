@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+
+# Uploads (optional - remove if you want to track uploads)
+uploads/*
+!uploads/.gitkeep
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build
+dist/
+build/
+
+# Coverage
+coverage/
