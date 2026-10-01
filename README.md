@@ -53,6 +53,7 @@ A full-stack healthcare web application that uses artificial intelligence to ana
   - Severity assessment (low/medium/high)
   - Individual test interpretations
 - **AI Chat Assistant** - Ask health questions and get context-aware answers based on your reports
+- **Agentic Assistant** - A LangGraph agent that picks tools to read your reports, compare results across reports, search report text, find a matching doctor, and send them a review request only after you approve it
 - **Trends Visualization** - Track health metrics over time with charts
 - **Doctor Connection** - Send requests to connect with available doctors
 - **Profile Management** - Manage personal and medical information
@@ -108,6 +109,7 @@ A full-stack healthcare web application that uses artificial intelligence to ana
 | Groq API | LLM (Llama 3.3 70B) |
 | SentenceTransformers | Text Embeddings |
 | LangChain | PDF Processing |
+| LangGraph | Tool-calling agent with human-in-the-loop approval |
 | PyMongo | MongoDB Connection |
 | NumPy | Vector Operations |
 
@@ -223,6 +225,9 @@ GROQ_API_KEY=your-groq-api-key
 
 # MongoDB Connection
 MONGO_URI=mongodb://localhost:27017/LabInsight
+
+# Same secret as Backend-Node/.env, so the agent can verify the user's login token
+JWT_SECRET=your-jwt-secret
 ```
 
 ### Firebase Configuration (Google OAuth)
@@ -331,6 +336,10 @@ http://localhost:5000/api-docs
 | POST | `/analyze` | Analyze PDF report |
 | GET | `/chat/latest-report?email=` | Get latest report info |
 | POST | `/chat/ask` | Ask AI a question |
+| POST | `/agent/chat` | Agent turn (requires `Authorization: Bearer <token>`) |
+| POST | `/agent/resume` | Approve or cancel the agent's pending action |
+
+See [AI-Service/README.md](AI-Service/README.md#agent) for how the agent works and how to run its evaluation.
 
 ---
 

@@ -1,10 +1,10 @@
 // src/components/Chat.tsx
 import { useEffect, useState } from "react";
 import Navbar from "./Navbar";
-import { Send, Bot, User, Sparkles, FileText } from "lucide-react";
+import { Send, Bot, User, Sparkles, FileText, Wrench, ShieldCheck } from "lucide-react";
 import { AI_SERVICE_URL } from "./config";
 import ReactMarkdown from "react-markdown";
-import { getAuthItem } from "./utils/authStorage";
+import { getAuthItem, getAuthToken } from "./utils/authStorage";
 
 interface ChatProps {
   hasUploadedReports?: boolean;
@@ -17,7 +17,32 @@ interface Message {
   sender: Sender;
   text: string;
   timestamp: string;
+  steps?: string[]; // tools the agent used for this answer
 }
+
+// Action the agent wants to take, waiting for the patient's approval
+interface PendingAction {
+  type: "doctor_request";
+  doctor: { name: string; email: string; specialization: string };
+  message: string;
+  warning?: string | null;
+}
+
+interface AgentResponse {
+  status: "done" | "awaiting_approval";
+  answer?: string;
+  pending_action?: PendingAction;
+  trace?: { tool: string }[];
+  thread_id: string;
+}
+
+const STEP_LABELS: Record<string, string> = {
+  get_latest_report: "Read latest report",
+  get_test_history: "Compared past reports",
+  search_report_text: "Searched report text",
+  find_doctors: "Looked up doctors",
+  request_doctor_review: "Prepared doctor request",
+};
 
 interface LatestReportInfo {
   file_name: string;
@@ -54,6 +79,11 @@ export default function Chat({ hasUploadedReports }: ChatProps) {
   const [latestReport, setLatestReport] = useState<LatestReportInfo | null>(
     null
   );
+
+  // Agent conversation state
+  const [threadId, setThreadId] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [editedRequest, setEditedRequest] = useState("");
 
   // -----------------------------
   // Fetch latest report + suggested questions
@@ -99,76 +129,98 @@ export default function Chat({ hasUploadedReports }: ChatProps) {
     new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
   // -----------------------------
-  // Send message to backend chat
+  // Talk to the agent (falls back to the original RAG endpoint)
   // -----------------------------
-  const sendToBackend = async (msg: string) => {
-  try {
-    const email = getAuthItem("userEmail");
-    
-    if (!email) {
-      setMessages(prev => [
-        ...prev,
-        {
-          id: Date.now() + 1,
-          sender: "bot",
-          text: "Please sign in to use the chat feature.",
-          timestamp: nowTime(),
-        },
-      ]);
-      setIsTyping(false);
-      return;
+  const addBotMessage = (text: string, steps?: string[]) => {
+    setMessages((prev) => [
+      ...prev,
+      { id: Date.now() + 1, sender: "bot", text, timestamp: nowTime(), steps },
+    ]);
+  };
+
+  const handleAgentResponse = (data: AgentResponse) => {
+    setThreadId(data.thread_id);
+    const steps = (data.trace || []).map((t) => STEP_LABELS[t.tool] || t.tool);
+
+    if (data.status === "awaiting_approval" && data.pending_action) {
+      addBotMessage(
+        "I've drafted a request for a doctor to review your results. Nothing is sent until you approve it below.",
+        steps
+      );
+      setPendingAction(data.pending_action);
+      setEditedRequest(data.pending_action.message);
+    } else {
+      addBotMessage(data.answer || "Sorry, I couldn't process that.", steps);
     }
+  };
 
-    console.log("Sending to AI:", { question: msg, email });
-
-    const res = await fetch(`${API_BASE}/chat/ask`, {
+  const callAgent = async (path: string, body: object) => {
+    const token = getAuthToken();
+    return fetch(`${API_BASE}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: msg, email }),
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
     });
+  };
 
-    console.log("Response status:", res.status);
+  const sendToBackend = async (msg: string) => {
+    try {
+      const email = getAuthItem("userEmail");
+      const token = getAuthToken();
 
-    if (!res.ok) {
-      const errorData = await res.json();
-      throw new Error(errorData.error || `HTTP ${res.status}`);
+      if (!email || !token) {
+        addBotMessage("Please sign in to use the chat feature.");
+        return;
+      }
+
+      const res = await callAgent("/agent/chat", { message: msg, thread_id: threadId });
+
+      if (res.status === 404 && !threadId) {
+        // Agent not deployed on this AI service yet: use the original RAG chat
+        const legacy = await fetch(`${API_BASE}/chat/ask`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: msg, email }),
+        });
+        const legacyData = await legacy.json();
+        addBotMessage(legacyData.answer || "Sorry, I couldn't process that.");
+        return;
+      }
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      handleAgentResponse(data);
+    } catch (err: any) {
+      console.error("Chat error:", err);
+      addBotMessage(`Error: ${err.message || "Could not contact AI. Please try again."}`);
+    } finally {
+      setIsTyping(false);
     }
+  };
 
-    const data = await res.json();
-    console.log("AI Response:", data);
-    
-    const answer = data.answer || "Sorry — I couldn't process that.";
-
-    // Add bot message to UI
-    setMessages(prev => [
-      ...prev,
-      {
-        id: Date.now() + 1,
-        sender: "bot",
-        text: answer,
-        timestamp: nowTime(),
-      },
-    ]);
-
-    setIsTyping(false);
-  } catch (err: any) {
-    console.error("Chat error:", err);
-    setMessages(prev => [
-      ...prev,
-      {
-        id: Date.now() + 1,
-        sender: "bot",
-        text: `Error: ${err.message || "Could not contact AI. Please try again."}`,
-        timestamp: nowTime(),
-      },
-    ]);
-    setIsTyping(false);
-  }
-};
-
-
-
-
+  // Patient approves or cancels the drafted doctor request
+  const handleDecision = async (approved: boolean) => {
+    if (!threadId) return;
+    setPendingAction(null);
+    setIsTyping(true);
+    try {
+      const res = await callAgent("/agent/resume", {
+        thread_id: threadId,
+        approved,
+        message: editedRequest,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      handleAgentResponse(data);
+    } catch (err: any) {
+      addBotMessage(`Error: ${err.message || "Could not reach the assistant."}`);
+    } finally {
+      setIsTyping(false);
+    }
+  };
 
   // -----------------------------
   // Handlers
@@ -186,6 +238,7 @@ export default function Chat({ hasUploadedReports }: ChatProps) {
 
     setMessages((prev) => [...prev, userMessage]);
     setInputMessage("");
+    setPendingAction(null);
     setIsTyping(true);
     sendToBackend(trimmed);
   };
@@ -199,6 +252,7 @@ export default function Chat({ hasUploadedReports }: ChatProps) {
     };
 
     setMessages((prev) => [...prev, userMessage]);
+    setPendingAction(null);
     setIsTyping(true);
     sendToBackend(question);
   };
@@ -287,6 +341,12 @@ export default function Chat({ hasUploadedReports }: ChatProps) {
                         <p className="whitespace-pre-line">{message.text}</p>
                       )}
                     </div>
+                    {message.steps && message.steps.length > 0 && (
+                      <div className="flex items-center gap-1 text-xs text-gray-500 mt-2">
+                        <Wrench className="w-3 h-3" />
+                        <span>{message.steps.join(" → ")}</span>
+                      </div>
+                    )}
                     <span className="text-xs text-gray-500 mt-2">
                       {message.timestamp}
                     </span>
@@ -296,7 +356,8 @@ export default function Chat({ hasUploadedReports }: ChatProps) {
                 {/* Quick Questions: only after last bot message */}
                 {message.sender === "bot" &&
                   index === messages.length - 1 &&
-                  !isTyping && (
+                  !isTyping &&
+                  !pendingAction && (
                     <div className="mt-6 ml-14">
                       <p className="text-sm font-medium text-gray-700 mb-3">
                         Quick Questions:
@@ -316,6 +377,52 @@ export default function Chat({ hasUploadedReports }: ChatProps) {
                   )}
               </div>
             ))}
+
+            {/* Human-in-the-loop approval card */}
+            {pendingAction && !isTyping && (
+              <div className="ml-14 max-w-2xl border border-blue-200 bg-blue-50 rounded-2xl p-5">
+                <div className="flex items-center gap-2 mb-3 text-blue-800">
+                  <ShieldCheck className="w-5 h-5" />
+                  <span className="font-semibold">Approve doctor request?</span>
+                </div>
+                <p className="text-sm text-gray-800 mb-1">
+                  <strong>{pendingAction.doctor.name}</strong>
+                  {" · "}
+                  {pendingAction.doctor.specialization}
+                </p>
+                <p className="text-xs text-gray-600 mb-3">
+                  They'll be able to see your uploaded reports if they accept.
+                </p>
+                {pendingAction.warning && (
+                  <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">
+                    {pendingAction.warning}
+                  </p>
+                )}
+                <label className="text-xs font-medium text-gray-700">Message to the doctor</label>
+                <textarea
+                  value={editedRequest}
+                  onChange={(e) => setEditedRequest(e.target.value)}
+                  maxLength={500}
+                  rows={3}
+                  className="w-full mt-1 mb-3 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none resize-none bg-white"
+                />
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => handleDecision(true)}
+                    disabled={!editedRequest.trim()}
+                    className="px-4 py-2 bg-blue-600 text-white text-sm rounded-xl hover:bg-blue-700 disabled:bg-gray-300"
+                  >
+                    Approve and send
+                  </button>
+                  <button
+                    onClick={() => handleDecision(false)}
+                    className="px-4 py-2 bg-white text-gray-700 text-sm border border-gray-300 rounded-xl hover:bg-gray-100"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Typing indicator */}
             {isTyping && (

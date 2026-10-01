@@ -45,3 +45,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Agent eval output
+eval/results/

@@ -363,7 +363,9 @@ def health_check():
         "endpoints": [
             "POST /analyze",
             "GET /chat/latest-report",
-            "POST /chat/ask"
+            "POST /chat/ask",
+            "POST /agent/chat",
+            "POST /agent/resume"
         ]
     })
 
@@ -528,6 +530,14 @@ def chat_ask_endpoint():
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+# ============================================================
+# AGENT (LangGraph tool-calling assistant, mounted at /agent)
+# ============================================================
+
+from agent import init_agent
+init_agent(app, db, embedding_model)
 
 
 # ============================================================
