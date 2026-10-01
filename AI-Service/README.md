@@ -231,11 +231,123 @@ async function getLatestReport(email) {
 }
 ```
 
+## Agent
+
+`/agent/*` adds a LangGraph agent on top of the RAG chat. Instead of always
+retrieving three chunks and answering, the model decides which tools to call,
+and any action that changes data pauses for the patient's approval.
+
+### Graph
+
+```
+START → safety_check ──(emergency wording)──→ END     fixed 911/988 reply, no LLM call
+             │
+             ▼
+           agent ⇄ tools        model calls tools until it can answer
+             │
+             ▼
+            END
+```
+
+| Tool | What it does |
+|------|--------------|
+| `get_latest_report` | Structured results of the newest report, with flagged tests |
+| `get_test_history` | One test across every report, oldest first, with trend |
+| `search_report_text` | Vector search over the report's embedded text (the original RAG retrieval, now a tool) |
+| `find_doctors` | Available doctors, filtered by specialization |
+| `request_doctor_review` | Sends a doctor connection request. Pauses with `interrupt()` until the patient approves, edits or cancels |
+
+### Guardrails
+
+- **Identity from the token, not the model.** Endpoints verify the Node backend's JWT and pass the patient's email to tools through LangGraph config. Tools never take an email argument, so a prompt can't point them at another patient.
+- **Human approval for writes.** `request_doctor_review` validates first (doctor exists, not already connected, no duplicate pending request), then pauses. Nothing is written unless the patient approves.
+- **Deterministic emergency check** before the model runs.
+- **Scoped system prompt:** explain results, no diagnoses, no medication advice, never claim an action happened unless the tool confirms it.
+- **Limits:** recursion limit of 12 steps per turn, history trimmed to the last 30 messages, request rate limiting, conversation threads locked to the patient who started them.
+
+### Endpoints
+
+`POST /agent/chat` with `Authorization: Bearer <token>`
+
+```json
+{ "message": "My glucose is high, can a doctor review it?", "thread_id": "optional" }
+```
+
+Returns either a finished answer:
+
+```json
+{ "status": "done", "answer": "...", "trace": [{"tool": "get_latest_report", "args": {}}], "latency_ms": 2140, "thread_id": "..." }
+```
+
+or a paused action:
+
+```json
+{ "status": "awaiting_approval", "thread_id": "...",
+  "pending_action": { "type": "doctor_request",
+                      "doctor": {"name": "Dr. Rao", "email": "...", "specialization": "Endocrinology"},
+                      "message": "Hi Dr. Rao, my fasting glucose came back at 118 mg/dL...",
+                      "warning": null } }
+```
+
+`POST /agent/resume`
+
+```json
+{ "thread_id": "...", "approved": true, "message": "optional edited message" }
+```
+
+### Setup
+
+1. `pip install -r requirements.txt` (adds `langgraph`, `langchain-groq`, `langchain-core`, `PyJWT`)
+2. Add `JWT_SECRET` to `AI-Service/.env`, using the same value as `Backend-Node/.env`
+3. `python ai_service.py`. You should see `✅ Agent endpoints mounted`
+
+If the agent dependencies aren't installed, the service still starts and the
+original `/chat/ask` keeps working. The frontend falls back to it automatically.
+
+### Tests and evaluation
+
+Unit tests for tool logic and the guardrail (no LLM, network or MongoDB needed):
+
+```bash
+python -m unittest discover tests -v
+```
+
+End-to-end agent evaluation against the real model. It seeds a synthetic
+patient into a separate `LabInsight_eval` database, runs 12 cases, then
+deletes it:
+
+```bash
+python eval/run_eval.py
+```
+
+Each case scores tool trajectory, grounding (real values present, no invented
+ones), safety, human-in-the-loop behavior (pauses, writes only on approval),
+prompt-injection resistance and latency. Results are saved to `eval/results/`.
+
+### Tracing
+
+Every tool call and turn is logged with latency (`labinsight.agent` logger).
+For step-by-step traces in LangSmith, set these in `.env`; LangGraph picks them up automatically:
+
+```
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=your-key
+LANGSMITH_PROJECT=labinsight-agent
+```
+
+### Known limits
+
+- Conversation state lives in memory (`MemorySaver`), so it resets when the service restarts and doesn't share across multiple instances. The MongoDB checkpointer (`langgraph-checkpoint-mongodb`) is the production swap.
+- The original `/chat/ask` and `/chat/latest-report` endpoints still trust the email in the request. The agent endpoints verify the JWT; the older ones should be moved to the same check.
+
 ## Project Structure
 
 ```
 AI-Service/
 ├── ai_service.py        # Main Flask app with all endpoints
+├── agent/               # LangGraph agent: graph, tools, prompts, /agent routes
+├── tests/               # Unit tests for tool logic and guardrails
+├── eval/                # End-to-end agent evaluation (cases + runner)
 ├── Embeddings/          # Folder for .pkl embedding files (auto-created)
 ├── requirements.txt     # Python dependencies
 ├── .env                 # Environment variables (not in git)
